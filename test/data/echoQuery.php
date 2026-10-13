@@ -1,1 +1,1 @@
-<?php echo $_SERVER['QUERY_STRING']; ?>
+<?php echo isset( $_SERVER['QUERY_STRING'] ) ? $_SERVER['QUERY_STRING'] : ''; ?>

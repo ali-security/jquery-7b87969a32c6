@@ -1,0 +1,126 @@
+name: build
+
+# Build-and-pack only: jQuery 1.11.1's tests run on Travis (.travis.yml).
+# Reproduces the npm tarball published for 1.11.1 (packed 2014-05-01).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node 0.10 (upstream Travis runtime)
+        run: |
+          export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+          if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+            curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+          fi
+          . "$NVM_DIR/nvm.sh"
+          nvm install 0.10
+          nvm use 0.10
+          echo "$(dirname "$(nvm which 0.10)")" >> "$GITHUB_PATH"
+
+      - name: Install libfaketime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faketime
+
+      - name: Show toolchain
+        run: |
+          node -v
+          npm -v
+
+      - name: Pin npm registry to the release date (time machine)
+        run: npm config set registry "https://:2014-05-01T18%3A05%3A32.863Z@time-machines-npm.sealsecurity.io/"
+
+      - name: Install dependencies
+        run: npm install
+
+      # Default grunt task: jsonlint, build, jshint, jscs, uglify, dist, compare_size.
+      # Run with the clock set to the release build time so the date stamps that
+      # build/tasks/build.js (@DATE) and the uglify banner (copyright year) embed
+      # match the published files.
+      - name: Build (grunt)
+        env:
+          TZ: UTC
+          FAKETIME_DONT_FAKE_MONOTONIC: "1"
+        run: faketime -f '@2014-05-01 17:42:00' ./node_modules/.bin/grunt
+
+      # Mirrors makeReleaseCopies() from build/release.js, which jQuery's release
+      # process ran to generate dist/cdn/ before publishing to npm.
+      - name: Generate dist/cdn release copies
+        run: |
+          cat > "$RUNNER_TEMP/make-release-copies.js" <<'EOF'
+          var fs = require( "fs" ),
+            path = require( "path" ),
+            newVersion = JSON.parse( fs.readFileSync( "package.json", "utf8" ) ).version,
+            preRelease = /-/.test( newVersion ),
+            devFile = "dist/jquery.js",
+            minFile = "dist/jquery.min.js",
+            mapFile = "dist/jquery.min.map",
+            cdnFolder = "dist/cdn",
+            releaseFiles = {
+              "jquery-VER.js": devFile,
+              "jquery-VER.min.js": minFile,
+              "jquery-VER.min.map": mapFile,
+              "jquery.js": devFile,
+              "jquery.min.js": minFile,
+              "jquery.min.map": mapFile,
+              "jquery-latest.js": devFile,
+              "jquery-latest.min.js": minFile,
+              "jquery-latest.min.map": mapFile
+            };
+
+          if ( !fs.existsSync( cdnFolder ) ) {
+            fs.mkdirSync( cdnFolder );
+          }
+
+          Object.keys( releaseFiles ).forEach(function( key ) {
+            var text,
+              builtFile = releaseFiles[ key ],
+              unpathedFile = key.replace( /VER/g, newVersion ),
+              releaseFile = cdnFolder + "/" + unpathedFile;
+
+            // Beta releases don't update the jquery-latest etc. copies
+            if ( !preRelease || key.indexOf( "VER" ) >= 0 ) {
+              if ( /\.map$/.test( releaseFile ) ) {
+                // Map files need to reference the new uncompressed name
+                text = fs.readFileSync( builtFile, "utf8" )
+                  .replace( /"file":"([^"]+)","sources":\["([^"]+)"\]/,
+                    "\"file\":\"" + unpathedFile.replace( /\.min\.map/, ".min.js" ) +
+                    "\",\"sources\":[\"" + unpathedFile.replace( /\.min\.map/, ".js" ) + "\"]" );
+                fs.writeFileSync( releaseFile, text );
+              } else if ( /\.min\.js$/.test( releaseFile ) ) {
+                // Remove the source map comment
+                text = fs.readFileSync( builtFile, "utf8" )
+                  .replace( /\/\/# sourceMappingURL=\S+/, "" );
+                fs.writeFileSync( releaseFile, text );
+              } else if ( builtFile !== releaseFile ) {
+                fs.writeFileSync( releaseFile, fs.readFileSync( builtFile ) );
+              }
+              console.log( "Created " + releaseFile );
+            }
+          });
+          EOF
+          node "$RUNNER_TEMP/make-release-copies.js"
+          ls -l dist dist/cdn
+
+      - name: Pack
+        run: |
+          # .github/ is this fork-only workflow; the published tarball has no
+          # .github/ and the shipped .npmignore predates it, so drop it before packing.
+          rm -rf .github
+          npm pack
+          mkdir -p pack-out
+          mv jquery-1.11.1.tgz pack-out/
+          tar tzvf pack-out/jquery-1.11.1.tgz
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: jquery-1.11.1-tgz
+          path: pack-out/jquery-1.11.1.tgz
+          if-no-files-found: error

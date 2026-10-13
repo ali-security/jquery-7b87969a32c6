@@ -1,3 +1,25 @@
 language: node_js
 node_js:
 - '0.10'
+dist: focal
+addons:
+  chrome: stable
+before_script:
+# PHP built-in server for the test/data/*.php fixtures (ajax tests). Use the distro
+# PHP (7.4 on focal); PHP_CLI_SERVER_WORKERS keeps slow fixtures (name.php?wait=5)
+# from stalling every other request.
+- sudo apt-get update -qq
+- sudo apt-get install -y php-cli
+- /usr/bin/php -v
+- google-chrome-stable --version
+- PHP_CLI_SERVER_WORKERS=8 /usr/bin/php -S 127.0.0.1:8000 -t . >/tmp/php.log 2>&1 &
+- for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8000/test/index.html && break; sleep 1; done
+- curl -sf -o /dev/null 'http://127.0.0.1:8000/test/data/echoQuery.php?ping=1'
+script:
+# 1. lint + build dist/jquery.js and dist/jquery.min.js (grunt) on node 0.10
+- npm test
+# 2. run the real QUnit browser suite against the freshly built dist/ in headless Chrome.
+#    puppeteer-core needs a modern node and is installed outside the repo (root package.json untouched).
+- bash -c 'source ~/.nvm/nvm.sh && nvm install 18 && node -v && npm install --no-save --no-package-lock --no-audit --no-fund --registry=https://registry.npmjs.org/ --prefix "$HOME/qunit-runner-deps" puppeteer-core@21 && NODE_PATH="$HOME/qunit-runner-deps/node_modules" node test/qunit-runner/run.js'
+after_failure:
+- tail -n 200 /tmp/php.log
